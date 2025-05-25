@@ -372,33 +372,48 @@ class CostAnalyzer:
             for model, cost in sorted(model_costs.items(), key=lambda x: x[1], reverse=True):
                 print(f"{model:<50} {self.format_currency(cost, currency):>15} ({model_counts[model]} messages)")
     
-    def print_session_details(self, top_n: int = 10, currency: str = "USD"):
+    def print_session_details(self, top_n: int = 10, currency: str = "USD", sort_by: str = "cost"):
         """Print detailed session information"""
         if not self.sessions:
             return
         
-        print("\n" + "-"*120)
-        print(f"TOP {top_n} MOST EXPENSIVE SESSIONS")
-        print("-"*120)
-        print(f"{'Session':<40} {'Start Time':>12} {'End Time':>12} {'Cost':>10} {'Messages':>10} {'Duration':>15}")
-        print("-"*120)
+        # Determine sort method
+        if sort_by == "date":
+            sorted_sessions = sorted(self.sessions.items(), 
+                                   key=lambda x: x[1].start_time, 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} MOST RECENT SESSIONS"
+        elif sort_by == "duration":
+            sorted_sessions = sorted(self.sessions.items(), 
+                                   key=lambda x: (x[1].end_time - x[1].start_time).total_seconds(), 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} LONGEST SESSIONS"
+        else:  # default to cost
+            sorted_sessions = sorted(self.sessions.items(), 
+                                   key=lambda x: x[1].total_cost_usd, 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} MOST EXPENSIVE SESSIONS"
         
-        sorted_sessions = sorted(self.sessions.items(), 
-                               key=lambda x: x[1].total_cost_usd, 
-                               reverse=True)[:top_n]
+        print("\n" + "-"*120)
+        print(title)
+        print("-"*120)
+        print(f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'Duration':>15}")
+        print("-"*120)
         
         session_total_cost = Decimal('0')
         for session_key, stats in sorted_sessions:
             duration = (stats.end_time - stats.start_time).total_seconds()
-            start_time = stats.start_time.strftime('%H:%M:%S')
-            end_time = stats.end_time.strftime('%H:%M:%S')
+            date = stats.start_time.strftime('%Y-%m-%d')
+            start_time = stats.start_time.strftime('%H:%M')
+            end_time = stats.end_time.strftime('%H:%M')
             session_total_cost += stats.total_cost_usd
-            print(f"{session_key:<40} {start_time:>12} {end_time:>12} {self.format_currency(stats.total_cost_usd, currency):>10} "
+            print(f"{session_key:<40} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} "
                   f"{stats.total_messages:>10} {f'{duration:.1f}s':>15}")
         
         # Add total line
         print("-"*120)
-        print(f"{'TOTAL for top ' + str(top_n) + ' sessions:':<64} {self.format_currency(session_total_cost, currency):>10}")
+        sort_label = "sorted by " + sort_by
+        print(f"{'TOTAL for ' + str(len(sorted_sessions)) + ' sessions (' + sort_label + '):':<68} {self.format_currency(session_total_cost, currency):>10}")
     
     def print_tool_usage(self):
         """Print tool usage statistics"""
@@ -553,6 +568,8 @@ def main():
     # Display options
     parser.add_argument("--sessions", type=int, default=10,
                        help="Number of top sessions to show (default: 10)")
+    parser.add_argument("--sort", choices=["cost", "date", "duration"], default="cost",
+                       help="Sort sessions by: cost, date, or duration (default: cost)")
     parser.add_argument("--currency", choices=["USD", "EUR", "GBP"], default="USD",
                        help="Currency for display (default: USD)")
     parser.add_argument("--detailed", action="store_true",
@@ -611,7 +628,7 @@ def main():
     
     # Display results
     analyzer.print_summary(args.currency)
-    analyzer.print_session_details(args.sessions, args.currency)
+    analyzer.print_session_details(args.sessions, args.currency, args.sort)
     
     if args.tools:
         analyzer.print_tool_usage()
