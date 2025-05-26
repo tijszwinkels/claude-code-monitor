@@ -114,8 +114,8 @@ class CostAnalyzer:
                 role = inner_msg.get('role', 'unknown')
                 content = inner_msg.get('content', '')
                 
-                # Extract model info
-                model = data.get('model')
+                # Extract model info from inner message for assistant messages
+                model = inner_msg.get('model') if role == 'assistant' else None
                 
                 # For assistant messages, get cost info from root level
                 if role == 'assistant' and data.get('type') == 'assistant':
@@ -127,7 +127,7 @@ class CostAnalyzer:
                     return Message(
                         timestamp=timestamp,
                         role=role,
-                        model=model or inner_msg.get('model'),
+                        model=model,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         cost_usd=Decimal(str(data.get('costUSD', 0))),  # Cost is at root level
@@ -140,7 +140,7 @@ class CostAnalyzer:
                     )
                 
                 # Handle tool uses and results in content
-                if isinstance(content, list):
+                if isinstance(content, list) and role == 'assistant':
                     messages = []
                     for part in content:
                         if isinstance(part, dict):
@@ -150,19 +150,6 @@ class CostAnalyzer:
                                     role=role,
                                     model=model,
                                     message_type="tool_use",
-                                    tool_name=part.get('name', 'unknown'),
-                                    session_id=session_id,
-                                    project_name=project_name,
-                                    file_path=str(file_path)
-                                ))
-                            elif part.get('type') == 'tool_result':
-                                messages.append(Message(
-                                    timestamp=timestamp,
-                                    role=role,
-                                    model=model,
-                                    cost_usd=Decimal(str(part.get('costUSD', 0))),
-                                    duration_ms=part.get('durationMs', 0),
-                                    message_type="tool_result",
                                     tool_name=part.get('name', 'unknown'),
                                     session_id=session_id,
                                     project_name=project_name,
@@ -377,6 +364,14 @@ class CostAnalyzer:
         if not self.sessions:
             return
         
+        # First, collect all unique models across all sessions
+        all_models = set()
+        for stats in self.sessions.values():
+            all_models.update(stats.models_used)
+        
+        # Sort models for consistent column ordering
+        sorted_models = sorted(all_models)
+        
         # Determine sort method
         if sort_by == "date":
             sorted_sessions = sorted(self.sessions.items(), 
@@ -394,11 +389,30 @@ class CostAnalyzer:
                                    reverse=True)[:top_n]
             title = f"TOP {top_n} MOST EXPENSIVE SESSIONS"
         
-        print("\n" + "-"*120)
+        # Build the header with model columns
+        header_width = 120 + (len(sorted_models) * 15)
+        print("\n" + "-"*header_width)
         print(title)
-        print("-"*120)
-        print(f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'Duration':>15}")
-        print("-"*120)
+        print("-"*header_width)
+        
+        # Build header line
+        header = f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'Duration':>15}"
+        
+        # Add model columns to header
+        for model in sorted_models:
+            # Shorten model names for column headers
+            if 'claude' in model:
+                parts = model.split('-')
+                if len(parts) >= 3:
+                    model_short = parts[1] + '-' + parts[2]  # e.g., "opus-4" or "sonnet-4"
+                else:
+                    model_short = model[:14]
+            else:
+                model_short = model[:14]
+            header += f" {model_short:>14}"
+        
+        print(header)
+        print("-"*header_width)
         
         session_total_cost = Decimal('0')
         for session_key, stats in sorted_sessions:
@@ -407,13 +421,35 @@ class CostAnalyzer:
             start_time = stats.start_time.strftime('%H:%M')
             end_time = stats.end_time.strftime('%H:%M')
             session_total_cost += stats.total_cost_usd
-            print(f"{session_key:<40} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} "
-                  f"{stats.total_messages:>10} {f'{duration:.1f}s':>15}")
+            
+            # Count messages per model for this session
+            model_counts = self._get_model_message_counts(stats.project_name, stats.session_id)
+            
+            line = f"{session_key:<40} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} " \
+                   f"{stats.total_messages:>10} {f'{duration:.1f}s':>15}"
+            
+            # Add model message counts
+            for model in sorted_models:
+                count = model_counts.get(model, 0)
+                line += f" {count:>14}"
+            
+            print(line)
         
         # Add total line
-        print("-"*120)
+        print("-"*header_width)
         sort_label = "sorted by " + sort_by
         print(f"{'TOTAL for ' + str(len(sorted_sessions)) + ' sessions (' + sort_label + '):':<68} {self.format_currency(session_total_cost, currency):>10}")
+    
+    def _get_model_message_counts(self, project_name: str, session_id: str) -> Dict[str, int]:
+        """Get message counts per model for a specific session"""
+        model_counts = defaultdict(int)
+        
+        for msg in self.messages:
+            if msg.project_name == project_name and msg.session_id == session_id:
+                if msg.model and msg.role == "assistant":
+                    model_counts[msg.model] += 1
+        
+        return model_counts
     
     def print_tool_usage(self):
         """Print tool usage statistics"""
