@@ -427,13 +427,13 @@ class CostAnalyzer:
             title = f"TOP {top_n} MOST EXPENSIVE SESSIONS"
         
         # Build the header with model columns
-        header_width = 124 + (len(sorted_models) * 15)
+        header_width = 119 + (len(sorted_models) * 15)
         print("\n" + "-"*header_width)
         print(title)
         print("-"*header_width)
         
         # Build header line
-        header = f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'In Tokens':>12} {'Out Tokens':>12}"
+        header = f"{'Session':<35} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'In Tokens':>12} {'Out Tokens':>12}"
         
         # Add model columns to header
         for model in sorted_models:
@@ -467,7 +467,10 @@ class CostAnalyzer:
             # Calculate total input tokens (including cache)
             total_input_tokens = stats.total_input_tokens + stats.total_cache_creation_input_tokens + stats.total_cache_read_input_tokens
             
-            line = f"{session_key:<40} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} " \
+            # Truncate session key to fit the column width
+            truncated_session = session_key[:34] + "…" if len(session_key) > 35 else session_key
+            
+            line = f"{truncated_session:<35} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} " \
                    f"{stats.total_messages:>10} {total_input_tokens:>12} {stats.total_output_tokens:>12}"
             
             # Add model message counts
