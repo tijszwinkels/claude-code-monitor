@@ -23,6 +23,8 @@ class Message:
     role: str
     model: Optional[str] = None
     input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: Decimal = Decimal('0')
     duration_ms: int = 0
@@ -46,6 +48,8 @@ class SessionStats:
     tool_uses: int = 0
     tool_results: int = 0
     total_input_tokens: int = 0
+    total_cache_creation_input_tokens: int = 0
+    total_cache_read_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: Decimal = Decimal('0')
     total_duration_ms: int = 0
@@ -132,6 +136,8 @@ class CostAnalyzer:
                     # Get token counts from usage object
                     usage = inner_msg.get('usage', {})
                     input_tokens = usage.get('input_tokens', 0)
+                    cache_creation_input_tokens = usage.get('cache_creation_input_tokens', 0)
+                    cache_read_input_tokens = usage.get('cache_read_input_tokens', 0)
                     output_tokens = usage.get('output_tokens', 0)
                     
                     return Message(
@@ -139,6 +145,8 @@ class CostAnalyzer:
                         role=role,
                         model=model,
                         input_tokens=input_tokens,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        cache_read_input_tokens=cache_read_input_tokens,
                         output_tokens=output_tokens,
                         cost_usd=Decimal(str(data.get('costUSD', 0))),  # Cost is at root level
                         duration_ms=data.get('durationMs', 0),  # Duration is at root level
@@ -289,6 +297,8 @@ class CostAnalyzer:
             
             # Update tokens and costs
             stats.total_input_tokens += msg.input_tokens
+            stats.total_cache_creation_input_tokens += msg.cache_creation_input_tokens
+            stats.total_cache_read_input_tokens += msg.cache_read_input_tokens
             stats.total_output_tokens += msg.output_tokens
             stats.total_cost_usd += msg.cost_usd
             stats.total_duration_ms += msg.duration_ms
@@ -339,6 +349,8 @@ class CostAnalyzer:
         
         total_cost = sum(msg.cost_usd for msg in self.messages)
         total_input_tokens = sum(msg.input_tokens for msg in self.messages)
+        total_cache_creation_tokens = sum(msg.cache_creation_input_tokens for msg in self.messages)
+        total_cache_read_tokens = sum(msg.cache_read_input_tokens for msg in self.messages)
         total_output_tokens = sum(msg.output_tokens for msg in self.messages)
         total_duration = sum(msg.duration_ms for msg in self.messages)
         
@@ -354,9 +366,12 @@ class CostAnalyzer:
         print(f"Date Range: {min_time.strftime('%Y-%m-%d %H:%M')} - "
               f"{max_time.strftime('%Y-%m-%d %H:%M')}")
         
+        total_all_input_tokens = total_input_tokens + total_cache_creation_tokens + total_cache_read_tokens
         print(f"\n{'Token Usage:':<30} {'Input:':<15} {total_input_tokens:,}")
+        print(f"{'':<30} {'Cache Creation:':<15} {total_cache_creation_tokens:,}")
+        print(f"{'':<30} {'Cache Read:':<15} {total_cache_read_tokens:,}")
         print(f"{'':<30} {'Output:':<15} {total_output_tokens:,}")
-        print(f"{'':<30} {'Total:':<15} {total_input_tokens + total_output_tokens:,}")
+        print(f"{'':<30} {'Total:':<15} {total_all_input_tokens + total_output_tokens:,}")
         
         print(f"\n{'Total Cost:':<30} {self.format_currency(total_cost, currency)}")
         print(f"{'Average Cost per Message:':<30} {self.format_currency(total_cost / len(self.messages) if self.messages else Decimal('0'), currency)}")
@@ -412,13 +427,13 @@ class CostAnalyzer:
             title = f"TOP {top_n} MOST EXPENSIVE SESSIONS"
         
         # Build the header with model columns
-        header_width = 120 + (len(sorted_models) * 15)
+        header_width = 124 + (len(sorted_models) * 15)
         print("\n" + "-"*header_width)
         print(title)
         print("-"*header_width)
         
         # Build header line
-        header = f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'Duration':>15}"
+        header = f"{'Session':<40} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'In Tokens':>12} {'Out Tokens':>12}"
         
         # Add model columns to header
         for model in sorted_models:
@@ -438,7 +453,6 @@ class CostAnalyzer:
         
         session_total_cost = Decimal('0')
         for session_key, stats in sorted_sessions:
-            duration = (stats.end_time - stats.start_time).total_seconds()
             # Convert to local timezone for display
             local_start = stats.start_time.astimezone(self.local_tz)
             local_end = stats.end_time.astimezone(self.local_tz)
@@ -450,8 +464,11 @@ class CostAnalyzer:
             # Count messages per model for this session
             model_counts = self._get_model_message_counts(stats.project_name, stats.session_id)
             
+            # Calculate total input tokens (including cache)
+            total_input_tokens = stats.total_input_tokens + stats.total_cache_creation_input_tokens + stats.total_cache_read_input_tokens
+            
             line = f"{session_key:<40} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} " \
-                   f"{stats.total_messages:>10} {f'{duration:.1f}s':>15}"
+                   f"{stats.total_messages:>10} {total_input_tokens:>12} {stats.total_output_tokens:>12}"
             
             # Add model message counts
             for model in sorted_models:
@@ -514,8 +531,8 @@ class CostAnalyzer:
             # Write session summary
             writer.writerow(['Session Summary'])
             writer.writerow(['Project', 'Session ID', 'Start Time', 'End Time', 
-                           'Messages', 'Cost (USD)', 'Input Tokens', 'Output Tokens', 
-                           'Duration (ms)', 'Models Used'])
+                           'Messages', 'Cost (USD)', 'Input Tokens', 'Cache Creation Tokens', 
+                           'Cache Read Tokens', 'Output Tokens', 'Models Used'])
             
             for session_key, stats in sorted(self.sessions.items()):
                 writer.writerow([
@@ -526,8 +543,9 @@ class CostAnalyzer:
                     stats.total_messages,
                     float(stats.total_cost_usd),
                     stats.total_input_tokens,
+                    stats.total_cache_creation_input_tokens,
+                    stats.total_cache_read_input_tokens,
                     stats.total_output_tokens,
-                    stats.total_duration_ms,
                     ', '.join(stats.models_used)
                 ])
             
@@ -536,8 +554,8 @@ class CostAnalyzer:
             # Write message details
             writer.writerow(['Message Details'])
             writer.writerow(['Timestamp', 'Project', 'Session', 'Role', 'Type', 
-                           'Model', 'Cost (USD)', 'Input Tokens', 'Output Tokens', 
-                           'Duration (ms)', 'Tool Name'])
+                           'Model', 'Cost (USD)', 'Input Tokens', 'Cache Creation Tokens',
+                           'Cache Read Tokens', 'Output Tokens', 'Duration (ms)', 'Tool Name'])
             
             for msg in sorted(self.messages, key=lambda m: m.timestamp):
                 writer.writerow([
@@ -549,6 +567,8 @@ class CostAnalyzer:
                     msg.model or '',
                     float(msg.cost_usd),
                     msg.input_tokens,
+                    msg.cache_creation_input_tokens,
+                    msg.cache_read_input_tokens,
                     msg.output_tokens,
                     msg.duration_ms,
                     msg.tool_name or ''
@@ -565,6 +585,8 @@ class CostAnalyzer:
                 'total_sessions': len(self.sessions),
                 'total_cost_usd': float(sum(msg.cost_usd for msg in self.messages)),
                 'total_input_tokens': sum(msg.input_tokens for msg in self.messages),
+                'total_cache_creation_input_tokens': sum(msg.cache_creation_input_tokens for msg in self.messages),
+                'total_cache_read_input_tokens': sum(msg.cache_read_input_tokens for msg in self.messages),
                 'total_output_tokens': sum(msg.output_tokens for msg in self.messages),
                 'total_duration_ms': sum(msg.duration_ms for msg in self.messages),
                 'date_range': {
@@ -590,6 +612,8 @@ class CostAnalyzer:
                 'tool_results': stats.tool_results,
                 'total_cost_usd': float(stats.total_cost_usd),
                 'total_input_tokens': stats.total_input_tokens,
+                'total_cache_creation_input_tokens': stats.total_cache_creation_input_tokens,
+                'total_cache_read_input_tokens': stats.total_cache_read_input_tokens,
                 'total_output_tokens': stats.total_output_tokens,
                 'total_duration_ms': stats.total_duration_ms,
                 'models_used': list(stats.models_used),
@@ -607,6 +631,8 @@ class CostAnalyzer:
                 'model': msg.model,
                 'cost_usd': float(msg.cost_usd),
                 'input_tokens': msg.input_tokens,
+                'cache_creation_input_tokens': msg.cache_creation_input_tokens,
+                'cache_read_input_tokens': msg.cache_read_input_tokens,
                 'output_tokens': msg.output_tokens,
                 'duration_ms': msg.duration_ms,
                 'tool_name': msg.tool_name
