@@ -6,7 +6,7 @@ A comprehensive tool to analyze costs from Claude Code session logs.
 
 import json
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
@@ -14,6 +14,7 @@ import csv
 import sys
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
+import time
 
 @dataclass
 class Message:
@@ -57,6 +58,9 @@ class CostAnalyzer:
         self.messages: List[Message] = []
         self.sessions: Dict[str, SessionStats] = {}
         
+        # Get local timezone
+        self.local_tz = datetime.now().astimezone().tzinfo
+        
         # Model pricing (per million tokens)
         self.model_pricing = {
             "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
@@ -95,14 +99,20 @@ class CostAnalyzer:
             if not timestamp_str:
                 return None
             
-            # Handle timezone-aware timestamps
+            # Handle timezone-aware timestamps - parse as UTC
             try:
+                # Parse ISO format with Z as UTC
                 timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
             except:
                 timestamp = datetime.fromisoformat(timestamp_str)
-            # Convert to naive datetime for consistent comparisons
-            if timestamp.tzinfo:
-                timestamp = timestamp.replace(tzinfo=None)
+            
+            # Ensure we have a timezone-aware datetime in UTC
+            if timestamp.tzinfo is None:
+                # Assume UTC if no timezone info
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            else:
+                # Convert to UTC if not already
+                timestamp = timestamp.astimezone(timezone.utc)
             
             # Get session and project info from file path
             project_name = file_path.parent.name
@@ -218,15 +228,23 @@ class CostAnalyzer:
     def _is_within_date_range(self, msg: Message, date_from: Optional[datetime],
                              date_to: Optional[datetime]) -> bool:
         """Check if message is within specified date range"""
-        # Ensure all datetimes are naive for comparison
-        msg_time = msg.timestamp.replace(tzinfo=None) if msg.timestamp.tzinfo else msg.timestamp
+        # Work with timezone-aware datetimes in UTC
+        msg_time = msg.timestamp
         
         if date_from:
-            from_time = date_from.replace(tzinfo=None) if date_from.tzinfo else date_from
+            # Ensure date_from is timezone-aware
+            if date_from.tzinfo is None:
+                from_time = date_from.replace(tzinfo=self.local_tz).astimezone(timezone.utc)
+            else:
+                from_time = date_from.astimezone(timezone.utc)
             if msg_time < from_time:
                 return False
         if date_to:
-            to_time = date_to.replace(tzinfo=None) if date_to.tzinfo else date_to
+            # Ensure date_to is timezone-aware
+            if date_to.tzinfo is None:
+                to_time = date_to.replace(tzinfo=self.local_tz).astimezone(timezone.utc)
+            else:
+                to_time = date_to.astimezone(timezone.utc)
             if msg_time > to_time:
                 return False
         return True
@@ -281,7 +299,8 @@ class CostAnalyzer:
     
     def get_time_period_stats(self, period: str) -> Tuple[datetime, datetime]:
         """Get date range for specified time period"""
-        now = datetime.now()
+        # Get current time in local timezone
+        now = datetime.now(self.local_tz)
         
         if period == "today":
             start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -329,8 +348,11 @@ class CostAnalyzer:
         
         print(f"\nTotal Messages: {len(self.messages)}")
         print(f"Total Sessions: {len(self.sessions)}")
-        print(f"Date Range: {min(m.timestamp for m in self.messages).strftime('%Y-%m-%d %H:%M')} - "
-              f"{max(m.timestamp for m in self.messages).strftime('%Y-%m-%d %H:%M')}")
+        # Convert timestamps to local timezone for display
+        min_time = min(m.timestamp for m in self.messages).astimezone(self.local_tz)
+        max_time = max(m.timestamp for m in self.messages).astimezone(self.local_tz)
+        print(f"Date Range: {min_time.strftime('%Y-%m-%d %H:%M')} - "
+              f"{max_time.strftime('%Y-%m-%d %H:%M')}")
         
         print(f"\n{'Token Usage:':<30} {'Input:':<15} {total_input_tokens:,}")
         print(f"{'':<30} {'Output:':<15} {total_output_tokens:,}")
@@ -417,9 +439,12 @@ class CostAnalyzer:
         session_total_cost = Decimal('0')
         for session_key, stats in sorted_sessions:
             duration = (stats.end_time - stats.start_time).total_seconds()
-            date = stats.start_time.strftime('%Y-%m-%d')
-            start_time = stats.start_time.strftime('%H:%M')
-            end_time = stats.end_time.strftime('%H:%M')
+            # Convert to local timezone for display
+            local_start = stats.start_time.astimezone(self.local_tz)
+            local_end = stats.end_time.astimezone(self.local_tz)
+            date = local_start.strftime('%Y-%m-%d')
+            start_time = local_start.strftime('%H:%M')
+            end_time = local_end.strftime('%H:%M')
             session_total_cost += stats.total_cost_usd
             
             # Count messages per model for this session
@@ -496,8 +521,8 @@ class CostAnalyzer:
                 writer.writerow([
                     stats.project_name,
                     stats.session_id,
-                    stats.start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    stats.end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    stats.start_time.astimezone(self.local_tz).strftime('%Y-%m-%d %H:%M:%S'),
+                    stats.end_time.astimezone(self.local_tz).strftime('%Y-%m-%d %H:%M:%S'),
                     stats.total_messages,
                     float(stats.total_cost_usd),
                     stats.total_input_tokens,
@@ -516,7 +541,7 @@ class CostAnalyzer:
             
             for msg in sorted(self.messages, key=lambda m: m.timestamp):
                 writer.writerow([
-                    msg.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    msg.timestamp.astimezone(self.local_tz).strftime('%Y-%m-%d %H:%M:%S'),
                     msg.project_name,
                     msg.session_id,
                     msg.role,
@@ -634,10 +659,14 @@ def main():
         date_from, date_to = analyzer.get_time_period_stats(args.period)
     else:
         if args.date_from:
+            # Parse as local date and add timezone info
             date_from = datetime.strptime(args.date_from, "%Y-%m-%d")
+            date_from = date_from.replace(tzinfo=analyzer.local_tz)
         if args.date_to:
+            # Parse as local date, set to end of day, and add timezone info
             date_to = datetime.strptime(args.date_to, "%Y-%m-%d").replace(
                 hour=23, minute=59, second=59, microsecond=999999)
+            date_to = date_to.replace(tzinfo=analyzer.local_tz)
     
     # Find and load log files
     print("Searching for Claude Code log files...")
@@ -679,7 +708,7 @@ def main():
         for msg in sorted(analyzer.messages, key=lambda m: m.timestamp):
             if msg.cost_usd > 0:
                 session_key = f"{msg.project_name}/{msg.session_id}"
-                print(f"{msg.timestamp.strftime('%Y-%m-%d %H:%M:%S'):<20} "
+                print(f"{msg.timestamp.astimezone(analyzer.local_tz).strftime('%Y-%m-%d %H:%M:%S'):<20} "
                       f"{session_key[:30]:<30} {msg.message_type:<15} "
                       f"{analyzer.format_currency(msg.cost_usd, args.currency):>10}")
     
