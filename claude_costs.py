@@ -412,7 +412,7 @@ class CostAnalyzer:
         # Determine sort method
         if sort_by == "date":
             sorted_sessions = sorted(self.sessions.items(), 
-                                   key=lambda x: x[1].start_time, 
+                                   key=lambda x: x[1].end_time, 
                                    reverse=True)[:top_n]
             title = f"TOP {top_n} MOST RECENT SESSIONS"
         elif sort_by == "duration":
