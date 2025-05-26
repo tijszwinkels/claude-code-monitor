@@ -10,7 +10,7 @@ import time
 import sys
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 from typing import Optional, Dict, Any, Set
@@ -24,6 +24,9 @@ class MessageMonitor:
         self.follow = follow
         self.show_full = show_full
         self.show_tools = show_tools or show_full  # --full implies --tools
+        
+        # Get local timezone
+        self.local_tz = datetime.now().astimezone().tzinfo
         self.colors = {
             'user': '\033[94m',      # Blue
             'assistant': '\033[92m', # Green
@@ -75,13 +78,25 @@ class MessageMonitor:
         return text
     
     def format_timestamp(self, timestamp: Optional[str] = None) -> str:
-        """Format timestamp for display"""
+        """Format timestamp for display in local timezone"""
         if not timestamp:
             timestamp = datetime.now().isoformat()
         
         try:
+            # Parse ISO format with Z as UTC
             dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            return dt.strftime("%H:%M:%S.%f")[:-3]  # Include milliseconds
+            
+            # Ensure we have a timezone-aware datetime in UTC
+            if dt.tzinfo is None:
+                # Assume UTC if no timezone info
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                # Convert to UTC if not already
+                dt = dt.astimezone(timezone.utc)
+            
+            # Convert to local timezone for display
+            local_dt = dt.astimezone(self.local_tz)
+            return local_dt.strftime("%H:%M:%S.%f")[:-3]  # Include milliseconds
         except:
             return timestamp[:12] if len(timestamp) > 12 else timestamp
     
@@ -139,8 +154,9 @@ class MessageMonitor:
             if role == 'assistant' and msg_type == 'assistant':
                 cost = message.get('costUSD', 0)
                 duration = message.get('durationMs', 0)
+                model = inner_msg.get('model', 'unknown')
                 if cost > 0:
-                    content += f"\n[Cost: ${cost:.4f}, Duration: {duration}ms]"
+                    content += f"\n[Cost: ${cost:.4f}, Duration: {duration}ms, Model: {model}]"
         else:
             # Fallback for other message formats
             role = message.get('role', msg_type)
