@@ -330,16 +330,16 @@ class CostAnalyzer:
         
         return start, end
     
-    def format_currency(self, amount: Decimal, currency: str = "USD") -> str:
+    def format_currency(self, amount: Decimal, currency: str = "USD", precision: int = 2) -> str:
         """Format currency amount"""
         if currency == "USD":
-            return f"${amount:.4f}"
+            return f"${amount:.{precision}f}"
         elif currency == "EUR":
-            return f"€{amount:.4f}"
+            return f"€{amount:.{precision}f}"
         elif currency == "GBP":
-            return f"£{amount:.4f}"
+            return f"£{amount:.{precision}f}"
         else:
-            return f"{amount:.4f} {currency}"
+            return f"{amount:.{precision}f} {currency}"
     
     def print_summary(self, currency: str = "USD"):
         """Print summary statistics"""
@@ -373,9 +373,9 @@ class CostAnalyzer:
         print(f"{'':<30} {'Output:':<15} {total_output_tokens:,}")
         print(f"{'':<30} {'Total:':<15} {total_all_input_tokens + total_output_tokens:,}")
         
-        print(f"\n{'Total Cost:':<30} {self.format_currency(total_cost, currency)}")
-        print(f"{'Average Cost per Message:':<30} {self.format_currency(total_cost / len(self.messages) if self.messages else Decimal('0'), currency)}")
-        print(f"{'Average Cost per Session:':<30} {self.format_currency(total_cost / len(self.sessions) if self.sessions else Decimal('0'), currency)}")
+        print(f"\n{'Total Cost:':<30} {self.format_currency(total_cost, currency, 2)}")
+        print(f"{'Average Cost per Message:':<30} {self.format_currency(total_cost / len(self.messages) if self.messages else Decimal('0'), currency, 2)}")
+        print(f"{'Average Cost per Session:':<30} {self.format_currency(total_cost / len(self.sessions) if self.sessions else Decimal('0'), currency, 2)}")
         
         if total_duration > 0:
             print(f"\n{'Total Duration:':<30} {total_duration / 1000:.2f} seconds")
@@ -394,9 +394,9 @@ class CostAnalyzer:
             print("COST BY MODEL")
             print("-"*80)
             for model, cost in sorted(model_costs.items(), key=lambda x: x[1], reverse=True):
-                print(f"{model:<50} {self.format_currency(cost, currency):>15} ({model_counts[model]} messages)")
+                print(f"{model:<50} {self.format_currency(cost, currency, 2):>15} ({model_counts[model]} messages)")
     
-    def print_session_details(self, top_n: int = 10, currency: str = "USD", sort_by: str = "cost"):
+    def print_session_details(self, top_n: int = 10, currency: str = "USD", sort_by: str = "cost", gpu_hours: bool = False):
         """Print detailed session information"""
         if not self.sessions:
             return
@@ -427,13 +427,17 @@ class CostAnalyzer:
             title = f"TOP {top_n} MOST EXPENSIVE SESSIONS"
         
         # Build the header with model columns
-        header_width = 119 + (len(sorted_models) * 15)
+        gpu_hours_col_width = 12 if gpu_hours else 0
+        header_width = 119 + (len(sorted_models) * 15) + gpu_hours_col_width
         print("\n" + "-"*header_width)
         print(title)
         print("-"*header_width)
         
         # Build header line
-        header = f"{'Session':<35} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10} {'Messages':>10} {'In Tokens':>12} {'Out Tokens':>12}"
+        header = f"{'Session':<35} {'Date':>12} {'Start':>8} {'End':>8} {'Cost':>10}"
+        if gpu_hours:
+            header += f" {'GPU Hours':>10}"
+        header += f" {'Messages':>10} {'In Tokens':>12} {'Out Tokens':>12}"
         
         # Add model columns to header
         for model in sorted_models:
@@ -470,8 +474,11 @@ class CostAnalyzer:
             # Truncate session key to fit the column width
             truncated_session = session_key[:34] + "…" if len(session_key) > 35 else session_key
             
-            line = f"{truncated_session:<35} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency):>10} " \
-                   f"{stats.total_messages:>10} {total_input_tokens:>12} {stats.total_output_tokens:>12}"
+            line = f"{truncated_session:<35} {date:>12} {start_time:>8} {end_time:>8} {self.format_currency(stats.total_cost_usd, currency, 2):>10}"
+            if gpu_hours:
+                gpu_hours_value = float(stats.total_cost_usd) / 8
+                line += f" {gpu_hours_value:>10.4f}"
+            line += f" {stats.total_messages:>10} {total_input_tokens:>12} {stats.total_output_tokens:>12}"
             
             # Add model message counts
             for model in sorted_models:
@@ -483,7 +490,11 @@ class CostAnalyzer:
         # Add total line
         print("-"*header_width)
         sort_label = "sorted by " + sort_by
-        print(f"{'TOTAL for ' + str(len(sorted_sessions)) + ' sessions (' + sort_label + '):':<68} {self.format_currency(session_total_cost, currency):>10}")
+        total_line = f"{'TOTAL for ' + str(len(sorted_sessions)) + ' sessions (' + sort_label + '):':<68} {self.format_currency(session_total_cost, currency, 2):>10}"
+        if gpu_hours:
+            total_gpu_hours = float(session_total_cost) / 8
+            total_line += f" {total_gpu_hours:>10.4f}"
+        print(total_line)
     
     def _get_model_message_counts(self, project_name: str, session_id: str) -> Dict[str, int]:
         """Get message counts per model for a specific session"""
@@ -519,7 +530,121 @@ class CostAnalyzer:
             
             for tool, count in sorted(all_tools.items(), key=lambda x: x[1], reverse=True):
                 cost = tool_costs.get(tool, Decimal('0'))
-                print(f"{tool:<30} {count:>10} {self.format_currency(cost):>15}")
+                print(f"{tool:<30} {count:>10} {self.format_currency(cost, 'USD', 2):>15}")
+    
+    def print_daily_stats(self, num_days: int, currency: str = "USD", gpu_hours: bool = False):
+        """Print daily aggregated statistics"""
+        if not self.messages:
+            print("No messages found to aggregate by day.")
+            return
+        
+        # Group messages by day
+        daily_stats = defaultdict(lambda: {
+            'cost': Decimal('0'),
+            'messages': 0,
+            'input_tokens': 0,
+            'cache_creation_tokens': 0,
+            'cache_read_tokens': 0,
+            'output_tokens': 0,
+            'total_tokens': 0,
+            'sessions': set(),
+            'models': set(),
+            'sonnet_messages': 0,
+            'opus_messages': 0,
+            'sonnet_tokens': 0,
+            'opus_tokens': 0,
+            'sonnet_cost': Decimal('0'),
+            'opus_cost': Decimal('0')
+        })
+        
+        for msg in self.messages:
+            # Convert to local timezone and get date
+            local_time = msg.timestamp.astimezone(self.local_tz)
+            date_key = local_time.date()
+            
+            day_stats = daily_stats[date_key]
+            day_stats['cost'] += msg.cost_usd
+            day_stats['messages'] += 1
+            day_stats['input_tokens'] += msg.input_tokens
+            day_stats['cache_creation_tokens'] += msg.cache_creation_input_tokens
+            day_stats['cache_read_tokens'] += msg.cache_read_input_tokens
+            day_stats['output_tokens'] += msg.output_tokens
+            
+            msg_total_tokens = (msg.input_tokens + msg.cache_creation_input_tokens + 
+                              msg.cache_read_input_tokens + msg.output_tokens)
+            day_stats['total_tokens'] += msg_total_tokens
+            
+            day_stats['sessions'].add(f"{msg.project_name}/{msg.session_id}")
+            if msg.model:
+                day_stats['models'].add(msg.model)
+                
+                # Track model-specific stats
+                if 'sonnet' in msg.model.lower():
+                    day_stats['sonnet_messages'] += 1
+                    day_stats['sonnet_tokens'] += msg_total_tokens
+                    day_stats['sonnet_cost'] += msg.cost_usd
+                elif 'opus' in msg.model.lower():
+                    day_stats['opus_messages'] += 1
+                    day_stats['opus_tokens'] += msg_total_tokens
+                    day_stats['opus_cost'] += msg.cost_usd
+        
+        # Sort by date (most recent first) and limit to num_days
+        sorted_days = sorted(daily_stats.items(), key=lambda x: x[0], reverse=True)[:num_days]
+        
+        # Print header
+        header_width = 220
+        if gpu_hours:
+            header_width += 12
+        
+        print("\n" + "-"*header_width)
+        print(f"DAILY STATISTICS (Last {num_days} days)")
+        print("-"*header_width)
+        
+        header = f"{'Date':<12} {'Sessions':>10} {'Cost':>10}"
+        if gpu_hours:
+            header += f" {'GPU Hours':>10}"
+        header += f" {'Total Msgs':>12} {'Total Tokens':>14} │ {'Sonnet Msgs':>12} {'Sonnet Cost':>12} {'Sonnet Tokens':>14} │ {'Opus Msgs':>10} {'Opus Cost':>10} {'Opus Tokens':>12}"
+        print(header)
+        print("-"*header_width)
+        
+        total_cost = Decimal('0')
+        total_messages = 0
+        total_sessions = set()
+        total_all_tokens = 0
+        total_sonnet_messages = 0
+        total_sonnet_tokens = 0
+        total_sonnet_cost = Decimal('0')
+        total_opus_messages = 0
+        total_opus_tokens = 0
+        total_opus_cost = Decimal('0')
+        
+        for date, stats in sorted_days:
+            total_cost += stats['cost']
+            total_messages += stats['messages']
+            total_sessions.update(stats['sessions'])
+            total_all_tokens += stats['total_tokens']
+            total_sonnet_messages += stats['sonnet_messages']
+            total_sonnet_tokens += stats['sonnet_tokens']
+            total_sonnet_cost += stats['sonnet_cost']
+            total_opus_messages += stats['opus_messages']
+            total_opus_tokens += stats['opus_tokens']
+            total_opus_cost += stats['opus_cost']
+            
+            line = f"{date.strftime('%Y-%m-%d'):<12} {len(stats['sessions']):>10} {self.format_currency(stats['cost'], currency, 2):>10}"
+            if gpu_hours:
+                gpu_hours_value = float(stats['cost']) / 8
+                line += f" {gpu_hours_value:>10.4f}"
+            line += f" {stats['messages']:>12,} {stats['total_tokens']:>14,} │ {stats['sonnet_messages']:>12,} {self.format_currency(stats['sonnet_cost'], currency, 2):>12} {stats['sonnet_tokens']:>14,} │ {stats['opus_messages']:>10,} {self.format_currency(stats['opus_cost'], currency, 2):>10} {stats['opus_tokens']:>12,}"
+            print(line)
+        
+        # Print totals
+        print("-"*header_width)
+        total_line = f"{'TOTAL':<12} {len(total_sessions):>10} {self.format_currency(total_cost, currency, 2):>10}"
+        if gpu_hours:
+            total_gpu_hours = float(total_cost) / 8
+            total_line += f" {total_gpu_hours:>10.4f}"
+        total_line += f" {total_messages:>12,} {total_all_tokens:>14,} │ {total_sonnet_messages:>12,} {self.format_currency(total_sonnet_cost, currency, 2):>12} {total_sonnet_tokens:>14,} │ {total_opus_messages:>10,} {self.format_currency(total_opus_cost, currency, 2):>10} {total_opus_tokens:>12,}"
+        print(total_line)
     
     def export_csv(self, filename: str):
         """Export analysis to CSV file"""
@@ -666,6 +791,8 @@ def main():
                        help="Show detailed message-level analysis")
     parser.add_argument("--tools", action="store_true",
                        help="Show tool usage statistics")
+    parser.add_argument("--days", type=int, metavar="NUM",
+                       help="Show daily aggregated statistics for the last NUM days")
     
     # Export options
     parser.add_argument("--csv", help="Export results to CSV file")
@@ -674,6 +801,10 @@ def main():
     # Session filtering
     parser.add_argument("--project", help="Filter by project name")
     parser.add_argument("--session", help="Filter by session ID")
+    
+    # GPU hours
+    parser.add_argument("--gpu-hours", action="store_true",
+                       help="Add GPU hours column (cost divided by 8)")
     
     args = parser.parse_args()
     
@@ -722,7 +853,11 @@ def main():
     
     # Display results
     analyzer.print_summary(args.currency)
-    analyzer.print_session_details(args.sessions, args.currency, args.sort)
+    
+    if args.days:
+        analyzer.print_daily_stats(args.days, args.currency, args.gpu_hours)
+    else:
+        analyzer.print_session_details(args.sessions, args.currency, args.sort, args.gpu_hours)
     
     if args.tools:
         analyzer.print_tool_usage()
@@ -739,7 +874,7 @@ def main():
                 session_key = f"{msg.project_name}/{msg.session_id}"
                 print(f"{msg.timestamp.astimezone(analyzer.local_tz).strftime('%Y-%m-%d %H:%M:%S'):<20} "
                       f"{session_key[:30]:<30} {msg.message_type:<15} "
-                      f"{analyzer.format_currency(msg.cost_usd, args.currency):>10}")
+                      f"{analyzer.format_currency(msg.cost_usd, args.currency, 2):>10}")
     
     # Export if requested
     if args.csv:
