@@ -1,0 +1,251 @@
+# Claude Code Monitoring Tools
+
+A collection of Python utilities for monitoring and analyzing [Claude Code](https://claude.ai/code) usage, costs, and session activity.
+
+## Tools
+
+### 🔍 `claude_monitor.py` - Real-time Session Monitor
+
+Monitor Claude Code message flows and session activity in real-time with colored terminal output.
+
+**Features:**
+- Real-time monitoring of multiple Claude Code sessions simultaneously
+- Color-coded output for different message types (user, assistant, system)
+- Tool usage tracking with cost and duration information
+- Session management with automatic detection of new/ended sessions
+- Support for both single-file and multi-session monitoring modes
+
+**Usage:**
+```bash
+# Monitor all active sessions (default mode)
+python claude_monitor.py
+
+# Monitor a specific log file
+python claude_monitor.py -f ~/.claude/projects/my-project/session.jsonl
+
+# Show detailed tool inputs/outputs
+python claude_monitor.py --tools
+
+# Show full content without truncation
+python claude_monitor.py --full
+
+# Demo mode with sample data
+python claude_monitor.py --demo
+```
+
+### 💰 `claude_costs.py` - Cost Analysis Tool
+
+Comprehensive cost analysis and reporting for Claude Code usage with detailed statistics and export capabilities.
+
+**Features:**
+- Detailed cost breakdown by session, model, and time period
+- Token usage tracking (input, cache creation, cache read, output)
+- Daily aggregated statistics with model breakdowns
+- Tool usage analysis and costs
+- Multiple export formats (CSV, JSON)
+- Flexible filtering by date range, project, or session
+- GPU hours calculation (cost ÷ 8) for comparison
+
+**Usage:**
+```bash
+# Basic cost analysis
+python claude_costs.py
+
+# Analyze specific time periods
+python claude_costs.py --period today
+python claude_costs.py --period yesterday
+python claude_costs.py --period week
+python claude_costs.py --period month
+
+# Custom date range
+python claude_costs.py --from 2024-01-01 --to 2024-01-31
+
+# Show daily breakdown for last 7 days
+python claude_costs.py --days 7
+
+# Sort sessions by different criteria
+python claude_costs.py --sort cost      # Most expensive first (default)
+python claude_costs.py --sort date      # Most recent first
+python claude_costs.py --sort duration  # Longest sessions first
+
+# Show top N sessions
+python claude_costs.py --sessions 20
+
+# Filter by project or session
+python claude_costs.py --project my-project
+python claude_costs.py --session abc123
+
+# Include tool usage statistics
+python claude_costs.py --tools
+
+# Export data
+python claude_costs.py --csv costs.csv
+python claude_costs.py --json costs.json
+
+# Show GPU hours column
+python claude_costs.py --gpu-hours
+```
+
+## Installation
+
+### Prerequisites
+- Python 3.7+
+- [Claude Code CLI](https://claude.ai/code) installed and configured
+
+### Setup
+1. Clone this repository:
+```bash
+git clone https://github.com/yourusername/claude-monitoring-tools.git
+cd claude-monitoring-tools
+```
+
+2. Make scripts executable (optional):
+```bash
+chmod +x claude_monitor.py claude_costs.py
+```
+
+3. Run the tools:
+```bash
+python claude_monitor.py
+python claude_costs.py
+```
+
+## How It Works
+
+Both tools read from Claude Code's log files located at `~/.claude/projects/*/logs/*.jsonl`. These logs contain:
+- Message exchanges between user and assistant
+- Token usage statistics and costs
+- Tool usage and execution results
+- Session timing and metadata
+
+### Log File Structure
+Claude Code stores logs in JSON Lines format with entries like:
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "type": "assistant",
+  "message": {
+    "role": "assistant",
+    "content": "...",
+    "model": "claude-3-5-sonnet-20241022",
+    "usage": {
+      "input_tokens": 150,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 75
+    }
+  },
+  "costUSD": 0.001125,
+  "durationMs": 2500
+}
+```
+
+## Output Examples
+
+### Cost Analysis Summary
+```
+================================================================================
+CLAUDE CODE COST ANALYSIS SUMMARY
+================================================================================
+
+Total Messages: 1,234
+Total Sessions: 45
+Date Range: 2024-01-01 10:30 - 2024-01-15 18:45
+
+Token Usage:              Input:           123,456
+                          Cache Creation:   12,345
+                          Cache Read:       23,456
+                          Output:           34,567
+                          Total:           193,824
+
+Total Cost:              $5.67
+Average Cost per Message: $0.0046
+Average Cost per Session: $0.1260
+
+COST BY MODEL
+--------------------------------------------------------------------------------
+claude-3-5-sonnet-20241022                         $4.20 (856 messages)
+claude-3-opus-20240229                             $1.47 (378 messages)
+```
+
+### Session Details
+```
+--------------------------------------------------------------------------------
+TOP 10 MOST EXPENSIVE SESSIONS
+--------------------------------------------------------------------------------
+Session                             Date        Start      End      Cost  Messages   In Tokens  Out Tokens
+my-project/abc123def456...          2024-01-15     14:30    15:45    $0.89       15       8,543       2,156
+another-project/789ghi012...        2024-01-14     09:15    10:30    $0.67       12       6,234       1,890
+```
+
+## Configuration
+
+### Custom Pricing
+You can modify the model pricing in `claude_costs.py` by editing the `model_pricing` dictionary:
+```python
+self.model_pricing = {
+    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
+    "custom-model": {"input": 2.50, "output": 12.00},
+    # Prices are per million tokens
+}
+```
+
+### Timezone Settings
+Both tools automatically detect and use your local timezone for display purposes while storing all data in UTC internally.
+
+## Export Formats
+
+### CSV Export
+Includes session summaries and detailed message data suitable for spreadsheet analysis.
+
+### JSON Export
+Structured data export for programmatic analysis:
+```json
+{
+  "generated": "2024-01-15T18:30:00Z",
+  "summary": {
+    "total_cost_usd": 5.67,
+    "total_sessions": 45,
+    "date_range": {
+      "start": "2024-01-01T10:30:00Z",
+      "end": "2024-01-15T18:45:00Z"
+    }
+  },
+  "sessions": { ... },
+  "messages": [ ... ]
+}
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Requirements
+
+- Python 3.7+
+- Standard library only (no external dependencies)
+- Claude Code CLI installed and configured
+
+## Troubleshooting
+
+### No log files found
+- Ensure Claude Code is installed and you've run at least one session
+- Check that `~/.claude/projects/` exists and contains project directories
+- Verify log files exist with `.jsonl` extension
+
+### Incorrect timezone display
+- Tools automatically detect local timezone
+- If issues persist, check your system's timezone configuration
+
+### Permission errors
+- Ensure read access to `~/.claude/projects/` directory
+- Check file permissions on log files
+
+For more help, please open an issue on GitHub.
