@@ -86,7 +86,7 @@ class CostAnalyzer:
         for jsonl_file in self.claude_dir.glob("*/*.jsonl"):
             # Check if file is within date range
             if date_from or date_to:
-                file_mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+                file_mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=self.local_tz)
                 if date_from and file_mtime < date_from:
                     continue
                 if date_to and file_mtime > date_to:

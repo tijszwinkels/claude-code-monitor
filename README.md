@@ -2,6 +2,65 @@
 
 A collection of Python utilities for monitoring and analyzing [Claude Code](https://claude.ai/code) usage, costs, and session activity.
 
+## Quick Start
+
+Get instant insights into your Claude Code usage:
+
+```bash
+# Real-time monitoring (hint: try with `watch`)
+python claude_monitor.py
+
+# Cost analysis for the past week
+python claude_costs.py --period week
+```
+
+**Sample Output:**
+```
+================================================================================
+CLAUDE CODE COST ANALYSIS SUMMARY
+================================================================================
+
+Total Messages: 3,681
+Total Sessions: 44
+Date Range: 2025-05-25 00:35 - 2025-05-28 11:24
+
+Token Usage:                   Input:          16,391
+                               Cache Creation: 6,118,276
+                               Cache Read:     68,679,549
+                               Output:         585,894
+                               Total:          75,400,110
+
+Total Cost:                    $149.45
+Average Cost per Message:      $0.04
+Average Cost per Session:      $3.40
+
+--------------------------------------------------------------------------------
+COST BY MODEL
+--------------------------------------------------------------------------------
+claude-opus-4-20250514                     $129.30 (1,054 messages)
+claude-sonnet-4-20250514                    $20.15 (654 messages)
+
+--------------------------------------------------------------------
+TOP 5 MOST EXPENSIVE SESSIONS
+--------------------------------------------------------------------
+Session                    Date      Start   End      Cost  Messages
+my-project/session-abc123  2025-05-26  22:02  10:53  $23.47      244
+another-project/xyz789     2025-05-25  23:07  23:31  $10.11      189
+data-analysis/session-456  2025-05-25  23:50  00:21   $9.13      177
+```
+
+**Daily Breakdown:**
+```bash
+python claude_costs.py --days 3
+```
+```
+DAILY STATISTICS (Last 3 days)
+Date        Sessions    Cost  Total Msgs │ Sonnet Msgs  Sonnet Cost │ Opus Msgs  Opus Cost
+2025-05-28        11  $25.60         574 │          78        $2.83 │       192     $22.76
+2025-05-27        13  $50.50         776 │          73        $2.81 │       272     $47.69
+2025-05-26        12  $44.42       1,484 │         390       $12.10 │       305     $32.33
+```
+
 ## Tools
 
 ### 🔍 `claude_monitor.py` - Real-time Session Monitor
