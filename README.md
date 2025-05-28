@@ -238,16 +238,6 @@ another-project/789ghi012...        2024-01-14     09:15    10:30    $0.67      
 
 ## Configuration
 
-### Custom Pricing
-You can modify the model pricing in `claude_costs.py` by editing the `model_pricing` dictionary:
-```python
-self.model_pricing = {
-    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
-    "custom-model": {"input": 2.50, "output": 12.00},
-    # Prices are per million tokens
-}
-```
-
 ### Timezone Settings
 Both tools automatically detect and use your local timezone for display purposes while storing all data in UTC internally.
 

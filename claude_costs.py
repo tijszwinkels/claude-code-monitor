@@ -64,17 +64,6 @@ class CostAnalyzer:
         
         # Get local timezone
         self.local_tz = datetime.now().astimezone().tzinfo
-        
-        # Model pricing (per million tokens)
-        self.model_pricing = {
-            "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
-            "claude-3-5-sonnet-20240620": {"input": 3.00, "output": 15.00},
-            "claude-3-opus-20240229": {"input": 15.00, "output": 75.00},
-            "claude-3-sonnet-20240229": {"input": 3.00, "output": 15.00},
-            "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-            # Default pricing if model not found
-            "default": {"input": 3.00, "output": 15.00}
-        }
     
     def find_log_files(self, date_from: Optional[datetime] = None, 
                       date_to: Optional[datetime] = None) -> List[Path]:
