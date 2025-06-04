@@ -64,6 +64,35 @@ class CostAnalyzer:
         
         # Get local timezone
         self.local_tz = datetime.now().astimezone().tzinfo
+        
+        # Claude pricing (per million tokens, as of 2024)
+        self.pricing = {
+            'claude-sonnet-4-20250514': {
+                'input': Decimal('3.00'),  # $3 per million input tokens
+                'output': Decimal('15.00'),  # $15 per million output tokens
+                'cache_write': Decimal('3.75'),  # $3.75 per million cache write tokens
+                'cache_read': Decimal('0.30')   # $0.30 per million cache read tokens
+            },
+            'claude-opus-4-20250514': {
+                'input': Decimal('15.00'),  # $15 per million input tokens
+                'output': Decimal('75.00'),  # $75 per million output tokens
+                'cache_write': Decimal('18.75'),  # $18.75 per million cache write tokens
+                'cache_read': Decimal('1.50')   # $1.50 per million cache read tokens
+            },
+            # Legacy model names
+            'claude-3-5-sonnet-20241022': {
+                'input': Decimal('3.00'),
+                'output': Decimal('15.00'),
+                'cache_write': Decimal('3.75'),
+                'cache_read': Decimal('0.30')
+            },
+            'claude-3-opus-20240229': {
+                'input': Decimal('15.00'),
+                'output': Decimal('75.00'),
+                'cache_write': Decimal('18.75'),
+                'cache_read': Decimal('1.50')
+            }
+        }
     
     def find_log_files(self, date_from: Optional[datetime] = None, 
                       date_to: Optional[datetime] = None) -> List[Path]:
@@ -83,6 +112,28 @@ class CostAnalyzer:
             log_files.append(jsonl_file)
         
         return sorted(log_files, key=lambda p: p.stat().st_mtime)
+    
+    def calculate_cost(self, model: str, input_tokens: int, cache_creation_tokens: int, 
+                      cache_read_tokens: int, output_tokens: int) -> Decimal:
+        """Calculate cost based on model and token usage"""
+        if not model or model not in self.pricing:
+            # Default to Sonnet pricing if model unknown
+            pricing = self.pricing.get('claude-sonnet-4-20250514', {
+                'input': Decimal('3.00'),
+                'output': Decimal('15.00'),
+                'cache_write': Decimal('3.75'),
+                'cache_read': Decimal('0.30')
+            })
+        else:
+            pricing = self.pricing[model]
+        
+        # Calculate cost per token type (prices are per million tokens)
+        input_cost = (Decimal(input_tokens) / Decimal('1000000')) * pricing['input']
+        cache_write_cost = (Decimal(cache_creation_tokens) / Decimal('1000000')) * pricing['cache_write']
+        cache_read_cost = (Decimal(cache_read_tokens) / Decimal('1000000')) * pricing['cache_read']
+        output_cost = (Decimal(output_tokens) / Decimal('1000000')) * pricing['output']
+        
+        return input_cost + cache_write_cost + cache_read_cost + output_cost
     
     def parse_message(self, data: Dict[str, Any], file_path: Path) -> Optional[Message]:
         """Parse a single message from log data"""
@@ -129,6 +180,14 @@ class CostAnalyzer:
                     cache_read_input_tokens = usage.get('cache_read_input_tokens', 0)
                     output_tokens = usage.get('output_tokens', 0)
                     
+                    # Calculate cost if not present (for newer log formats)
+                    cost_usd = data.get('costUSD')
+                    if cost_usd is None:
+                        cost_usd = self.calculate_cost(model, input_tokens, cache_creation_input_tokens, 
+                                                     cache_read_input_tokens, output_tokens)
+                    else:
+                        cost_usd = Decimal(str(cost_usd))
+                    
                     return Message(
                         timestamp=timestamp,
                         role=role,
@@ -137,7 +196,7 @@ class CostAnalyzer:
                         cache_creation_input_tokens=cache_creation_input_tokens,
                         cache_read_input_tokens=cache_read_input_tokens,
                         output_tokens=output_tokens,
-                        cost_usd=Decimal(str(data.get('costUSD', 0))),  # Cost is at root level
+                        cost_usd=cost_usd,
                         duration_ms=data.get('durationMs', 0),  # Duration is at root level
                         content=self._extract_text_content(content),
                         message_type="message",
