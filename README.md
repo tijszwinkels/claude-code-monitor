@@ -103,7 +103,7 @@ Comprehensive cost analysis and reporting for Claude Code usage with detailed st
 - Tool usage analysis and costs
 - Multiple export formats (CSV, JSON)
 - Flexible filtering by date range, project, or session
-- GPU hours calculation (cost ÷ 8) for comparison
+- GPU hours calculation (cost ÷ 8) for rough comparison (not accurate)
 
 **Usage:**
 ```bash
@@ -141,7 +141,7 @@ python claude_costs.py --tools
 python claude_costs.py --csv costs.csv
 python claude_costs.py --json costs.json
 
-# Show GPU hours column
+# Show GPU hours column (cost ÷ 8, rough estimate only)
 python claude_costs.py --gpu-hours
 ```
 
