@@ -12,6 +12,9 @@ python claude_monitor.py
 
 # Cost analysis for the past week
 python claude_costs.py --period week
+
+# Track Anthropic sessions (50/month limit)
+python claude_costs.py --anthropic-sessions --billing-day 25
 ```
 
 **Sample Output:**
@@ -104,6 +107,7 @@ Comprehensive cost analysis and reporting for Claude Code usage with detailed st
 - Multiple export formats (CSV, JSON)
 - Flexible filtering by date range, project, or session
 - GPU hours calculation (cost ÷ 8) for rough comparison (not accurate)
+- **Anthropic 5-hour session tracking** with billing cycle management and limit monitoring
 
 **Usage:**
 ```bash
@@ -143,6 +147,55 @@ python claude_costs.py --json costs.json
 
 # Show GPU hours column (cost ÷ 8, rough estimate only)
 python claude_costs.py --gpu-hours
+
+# Anthropic session tracking (5-hour windows)
+python claude_costs.py --anthropic-sessions --billing-day 25
+```
+
+#### Anthropic Session Tracking
+
+Track your usage against Anthropic's 50 sessions per month limit. Anthropic defines a "session" as a 5-hour window from your first message, where all messages within that window count as part of the same session.
+
+**Key Features:**
+- **5-hour session windows**: Automatically groups messages into Anthropic-defined sessions
+- **Billing cycle tracking**: Monitor sessions per billing cycle based on your billing day
+- **50-session limit monitoring**: Visual warnings when approaching or exceeding limits
+- **Model breakdown**: Separate tracking for Sonnet vs Opus usage within each session
+- **Project correlation**: Shows which Claude Code projects/sessions are included
+
+**Usage:**
+```bash
+# Show Anthropic sessions with billing cycles (required: specify your billing day)
+python claude_costs.py --anthropic-sessions --billing-day 25
+
+# Sort by cost/date/duration
+python claude_costs.py --anthropic-sessions --billing-day 1 --sort cost
+
+# Show more sessions
+python claude_costs.py --anthropic-sessions --billing-day 15 --sessions 20
+```
+
+**Sample Output:**
+```
+--------------------------------------------------------------------------------
+TOP 10 MOST EXPENSIVE ANTHROPIC SESSIONS (5-hour windows)
+--------------------------------------------------------------------------------
+Session Window                       Date     First     Last      Cost  Total Msgs  Total Tokens │ Sonnet Msgs  Sonnet Cost  Sonnet Tokens │ Opus Msgs  Opus Cost  Opus Tokens
+Anthropic-01                    2025-06-18     09:15    13:45    $45.67        123        45,234 │          89        $12.34         23,567 │        34     $33.33       21,667
+Anthropic-02                    2025-06-17     14:22    18:30    $38.91         89        38,901 │          67        $15.67         28,432 │        22     $23.24       10,469
+...
+
+================================================================================
+BILLING CYCLE BREAKDOWN (Billing day: 25)
+================================================================================
+2025-05-25 to 2025-06-25                    23 sessions    $234.56  ✅
+2025-04-25 to 2025-05-25                    45 sessions    $445.67  ⚠️  APPROACHING
+2025-03-25 to 2025-04-25                    52 sessions    $567.89  ⚠️  OVER LIMIT
+--------------------------------------------------------------------------------
+TOTAL across all cycles:                    120 sessions   $1248.12
+
+⚠️  BILLING CYCLES OVER 50 SESSION LIMIT:
+   2025-03-25 to 2025-04-25: 52 sessions (2 over limit)
 ```
 
 ## Installation
