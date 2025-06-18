@@ -728,22 +728,31 @@ class CostAnalyzer:
         
         # Calculate header width
         gpu_hours_col_width = 12 if gpu_hours else 0
-        header_width = 165 + gpu_hours_col_width
+        header_width = 220 + gpu_hours_col_width
         
         print("\n" + "-"*header_width)
         print(title)
         print("-"*header_width)
         
         # Build header line
-        header = f"{'Session Window':<35} {'Date':>12} {'First':>8} {'Last':>8} {'Window Cost':>12}"
+        header = f"{'Session Window':<35} {'Date':>12} {'First':>8} {'Last':>8} {'Cost':>10}"
         if gpu_hours:
             header += f" {'GPU Hours':>10}"
-        header += f" {'Messages':>10} {'Projects':>10} {'Claude Sessions':>15} {'In Tokens':>12} {'Out Tokens':>12}"
+        header += f" {'Total Msgs':>12} {'Total Tokens':>14} │ {'Sonnet Msgs':>12} {'Sonnet Cost':>12} {'Sonnet Tokens':>14} │ {'Opus Msgs':>10} {'Opus Cost':>10} {'Opus Tokens':>12}"
         
         print(header)
         print("-"*header_width)
         
         total_cost = Decimal('0')
+        total_messages = 0
+        total_all_tokens = 0
+        total_sonnet_messages = 0
+        total_sonnet_tokens = 0
+        total_sonnet_cost = Decimal('0')
+        total_opus_messages = 0
+        total_opus_tokens = 0
+        total_opus_cost = Decimal('0')
+        
         for i, session in enumerate(sorted_sessions, 1):
             # Convert to local timezone for display
             local_first = session.first_message_time.astimezone(self.local_tz)
@@ -752,20 +761,62 @@ class CostAnalyzer:
             first_time = local_first.strftime('%H:%M')
             last_time = local_last.strftime('%H:%M')
             total_cost += session.total_cost_usd
+            total_messages += session.total_messages
             
-            # Calculate total input tokens (including cache)
-            total_input_tokens = (session.total_input_tokens + 
-                                session.total_cache_creation_input_tokens + 
-                                session.total_cache_read_input_tokens)
+            # Calculate total tokens (including cache)
+            session_total_tokens = (session.total_input_tokens + 
+                                  session.total_cache_creation_input_tokens + 
+                                  session.total_cache_read_input_tokens + 
+                                  session.total_output_tokens)
+            total_all_tokens += session_total_tokens
+            
+            # Calculate model-specific stats for this session
+            session_sonnet_messages = 0
+            session_sonnet_tokens = 0
+            session_sonnet_cost = Decimal('0')
+            session_opus_messages = 0
+            session_opus_tokens = 0
+            session_opus_cost = Decimal('0')
+            
+            # Find all messages in this Anthropic session and categorize by model
+            for claude_session_key in session.claude_sessions:
+                for msg in self.messages:
+                    msg_session_key = f"{msg.project_name}/{msg.session_id}"
+                    if (msg_session_key == claude_session_key and 
+                        msg.timestamp >= session.start_time and 
+                        msg.timestamp <= session.end_time and
+                        msg.model):
+                        
+                        msg_total_tokens = (msg.input_tokens + msg.cache_creation_input_tokens + 
+                                          msg.cache_read_input_tokens + msg.output_tokens)
+                        
+                        if 'sonnet' in msg.model.lower():
+                            if msg.role == "assistant":
+                                session_sonnet_messages += 1
+                            session_sonnet_tokens += msg_total_tokens
+                            session_sonnet_cost += msg.cost_usd
+                        elif 'opus' in msg.model.lower():
+                            if msg.role == "assistant":
+                                session_opus_messages += 1
+                            session_opus_tokens += msg_total_tokens
+                            session_opus_cost += msg.cost_usd
+            
+            # Add to totals
+            total_sonnet_messages += session_sonnet_messages
+            total_sonnet_tokens += session_sonnet_tokens
+            total_sonnet_cost += session_sonnet_cost
+            total_opus_messages += session_opus_messages
+            total_opus_tokens += session_opus_tokens
+            total_opus_cost += session_opus_cost
             
             # Create session identifier
             session_id = f"Anthropic-{i:02d}"
             
-            line = f"{session_id:<35} {date:>12} {first_time:>8} {last_time:>8} {self.format_currency(session.total_cost_usd, currency, 2):>12}"
+            line = f"{session_id:<35} {date:>12} {first_time:>8} {last_time:>8} {self.format_currency(session.total_cost_usd, currency, 2):>10}"
             if gpu_hours:
                 gpu_hours_value = float(session.total_cost_usd) / 8
                 line += f" {gpu_hours_value:>10.4f}"
-            line += f" {session.total_messages:>10} {len(session.projects):>10} {len(session.claude_sessions):>15} {total_input_tokens:>12} {session.total_output_tokens:>12}"
+            line += f" {session.total_messages:>12,} {session_total_tokens:>14,} │ {session_sonnet_messages:>12,} {self.format_currency(session_sonnet_cost, currency, 2):>12} {session_sonnet_tokens:>14,} │ {session_opus_messages:>10,} {self.format_currency(session_opus_cost, currency, 2):>10} {session_opus_tokens:>12,}"
             
             print(line)
             
@@ -785,10 +836,11 @@ class CostAnalyzer:
         # Add total line
         print("-"*header_width)
         sort_label = "sorted by " + sort_by
-        total_line = f"{'TOTAL for ' + str(len(sorted_sessions)) + ' Anthropic sessions (' + sort_label + '):':<68} {self.format_currency(total_cost, currency, 2):>12}"
+        total_line = f"{'TOTAL for ' + str(len(sorted_sessions)) + ' Anthropic sessions (' + sort_label + '):':<60} {self.format_currency(total_cost, currency, 2):>10}"
         if gpu_hours:
             total_gpu_hours = float(total_cost) / 8
             total_line += f" {total_gpu_hours:>10.4f}"
+        total_line += f" {total_messages:>12,} {total_all_tokens:>14,} │ {total_sonnet_messages:>12,} {self.format_currency(total_sonnet_cost, currency, 2):>12} {total_sonnet_tokens:>14,} │ {total_opus_messages:>10,} {self.format_currency(total_opus_cost, currency, 2):>10} {total_opus_tokens:>12,}"
         print(total_line)
         
         # Show billing cycle breakdown
