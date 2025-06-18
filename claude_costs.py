@@ -393,6 +393,12 @@ class CostAnalyzer:
             if msg.role not in ['user', 'assistant']:
                 continue
                 
+            # Only include messages that involve LLM calls (consume tokens)
+            # This filters out messages without token usage (non-LLM interactions)
+            if (msg.input_tokens == 0 and msg.cache_creation_input_tokens == 0 and 
+                msg.cache_read_input_tokens == 0 and msg.output_tokens == 0):
+                continue
+                
             # If no current session or message is more than 5 hours after current session start
             if (current_session is None or 
                 msg.timestamp > current_session.start_time + timedelta(hours=5)):
