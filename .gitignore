@@ -39,3 +39,9 @@ reports/
 # Temporary files
 tmp/
 temp/
+
+# Personal hacks
+contrib/
+
+# Notes directory (personal project notes)
+notes/

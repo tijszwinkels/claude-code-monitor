@@ -7,6 +7,7 @@ A comprehensive tool to analyze costs from Claude Code session logs.
 import json
 import argparse
 from datetime import datetime, timedelta, timezone
+from calendar import monthrange
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
@@ -56,11 +57,32 @@ class SessionStats:
     models_used: set = field(default_factory=set)
     tools_used: Dict[str, int] = field(default_factory=dict)
 
+@dataclass
+class AnthropicSession:
+    """Represents a 5-hour Anthropic session window"""
+    start_time: datetime
+    end_time: datetime
+    first_message_time: datetime
+    last_message_time: datetime
+    total_messages: int = 0
+    user_messages: int = 0
+    assistant_messages: int = 0
+    total_cost_usd: Decimal = Decimal('0')
+    total_input_tokens: int = 0
+    total_cache_creation_input_tokens: int = 0
+    total_cache_read_input_tokens: int = 0
+    total_output_tokens: int = 0
+    claude_sessions: set = field(default_factory=set)  # Set of Claude Code session IDs in this window
+    projects: set = field(default_factory=set)
+    models_used: set = field(default_factory=set)
+
 class CostAnalyzer:
     def __init__(self):
         self.claude_dir = Path.home() / ".claude" / "projects"
         self.messages: List[Message] = []
         self.sessions: Dict[str, SessionStats] = {}
+        self.anthropic_sessions: List[AnthropicSession] = []
+        self.processed_hashes: set = set()  # For deduplication of repeated messages (fixes --continue double-counting)
         
         # Get local timezone
         self.local_tz = datetime.now().astimezone().tzinfo
@@ -162,6 +184,23 @@ class CostAnalyzer:
             project_name = file_path.parent.name
             session_id = file_path.stem
             
+            # Deduplication based on message ID and request ID (like claudia)
+            # Only deduplicate if we have both IDs for reliable identification
+            request_id = data.get('requestId')
+            if 'message' in data and isinstance(data['message'], dict):
+                msg_id = data['message'].get('id')
+                
+                # Only deduplicate if we have both message ID and request ID
+                if msg_id and request_id:
+                    dedup_hash = f"{msg_id}:{request_id}"
+                    
+                    # Skip if we've already processed this exact message
+                    if dedup_hash in self.processed_hashes:
+                        return None
+                    
+                    # Mark this message as processed
+                    self.processed_hashes.add(dedup_hash)
+            
             # Handle different message structures
             if 'message' in data:
                 inner_msg = data['message']
@@ -179,6 +218,11 @@ class CostAnalyzer:
                     cache_creation_input_tokens = usage.get('cache_creation_input_tokens', 0)
                     cache_read_input_tokens = usage.get('cache_read_input_tokens', 0)
                     output_tokens = usage.get('output_tokens', 0)
+                    
+                    # Skip entries without meaningful token usage (like claudia)
+                    if (input_tokens == 0 and cache_creation_input_tokens == 0 and 
+                        cache_read_input_tokens == 0 and output_tokens == 0):
+                        return None
                     
                     # Calculate cost if not present (for newer log formats)
                     cost_usd = data.get('costUSD')
@@ -256,6 +300,9 @@ class CostAnalyzer:
     def load_logs(self, files: List[Path], date_from: Optional[datetime] = None,
                   date_to: Optional[datetime] = None):
         """Load and parse log files"""
+        # Reset deduplication tracking for fresh analysis
+        self.processed_hashes.clear()
+        
         for file_path in files:
             try:
                 with open(file_path, 'r') as f:
@@ -354,6 +401,119 @@ class CostAnalyzer:
             # Track models
             if msg.model:
                 stats.models_used.add(msg.model)
+    
+    def calculate_anthropic_sessions(self):
+        """Calculate 5-hour Anthropic session windows from messages"""
+        if not self.messages:
+            return
+        
+        self.anthropic_sessions.clear()
+        
+        # Sort messages by timestamp
+        sorted_messages = sorted(self.messages, key=lambda m: m.timestamp)
+        
+        current_session = None
+        
+        for msg in sorted_messages:
+            # Skip messages that don't represent actual user interactions
+            if msg.role not in ['user', 'assistant']:
+                continue
+                
+            # Only include messages that involve LLM calls (consume tokens)
+            # This filters out messages without token usage (non-LLM interactions)
+            if (msg.input_tokens == 0 and msg.cache_creation_input_tokens == 0 and 
+                msg.cache_read_input_tokens == 0 and msg.output_tokens == 0):
+                continue
+                
+            # If no current session or message is more than 5 hours after current session start
+            if (current_session is None or 
+                msg.timestamp > current_session.start_time + timedelta(hours=5)):
+                
+                # Start new session
+                current_session = AnthropicSession(
+                    start_time=msg.timestamp,
+                    end_time=msg.timestamp + timedelta(hours=5),
+                    first_message_time=msg.timestamp,
+                    last_message_time=msg.timestamp
+                )
+                self.anthropic_sessions.append(current_session)
+            
+            # Update session stats
+            current_session.last_message_time = msg.timestamp
+            current_session.total_messages += 1
+            
+            if msg.role == 'user':
+                current_session.user_messages += 1
+            elif msg.role == 'assistant':
+                current_session.assistant_messages += 1
+                
+            current_session.total_cost_usd += msg.cost_usd
+            current_session.total_input_tokens += msg.input_tokens
+            current_session.total_cache_creation_input_tokens += msg.cache_creation_input_tokens
+            current_session.total_cache_read_input_tokens += msg.cache_read_input_tokens
+            current_session.total_output_tokens += msg.output_tokens
+            
+            # Track which Claude Code sessions and projects are in this Anthropic session
+            session_key = f"{msg.project_name}/{msg.session_id}"
+            current_session.claude_sessions.add(session_key)
+            current_session.projects.add(msg.project_name)
+            
+            if msg.model:
+                current_session.models_used.add(msg.model)
+    
+    def get_billing_cycles(self, billing_day: int) -> List[Tuple[datetime, datetime, str]]:
+        """Get list of billing cycles based on billing day and data range"""
+        if not self.messages:
+            return []
+        
+        # Get data range in local timezone
+        min_time = min(m.timestamp for m in self.messages).astimezone(self.local_tz)
+        max_time = max(m.timestamp for m in self.messages).astimezone(self.local_tz)
+        
+        cycles = []
+        
+        # Start from the billing cycle that contains the earliest message
+        current_date = min_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Adjust to find the correct billing cycle start
+        if billing_day <= min_time.day:
+            # Billing cycle already started this month
+            cycle_start = current_date.replace(day=billing_day)
+        else:
+            # Billing cycle starts in previous month
+            if current_date.month == 1:
+                prev_month = current_date.replace(year=current_date.year - 1, month=12)
+            else:
+                prev_month = current_date.replace(month=current_date.month - 1)
+            
+            # Handle case where previous month doesn't have the billing day
+            max_day_prev = monthrange(prev_month.year, prev_month.month)[1]
+            actual_billing_day = min(billing_day, max_day_prev)
+            cycle_start = prev_month.replace(day=actual_billing_day)
+        
+        # Generate cycles until we cover all data
+        while cycle_start <= max_time:
+            # Calculate next cycle start
+            if cycle_start.month == 12:
+                next_month = cycle_start.replace(year=cycle_start.year + 1, month=1)
+            else:
+                next_month = cycle_start.replace(month=cycle_start.month + 1)
+            
+            # Handle case where next month doesn't have the billing day
+            max_day_next = monthrange(next_month.year, next_month.month)[1]
+            actual_billing_day = min(billing_day, max_day_next)
+            cycle_end = next_month.replace(day=actual_billing_day) - timedelta(microseconds=1)
+            
+            # Create cycle label
+            cycle_label = f"{cycle_start.strftime('%Y-%m-%d')} to {cycle_end.strftime('%Y-%m-%d')}"
+            
+            cycles.append((cycle_start, cycle_end, cycle_label))
+            
+            # Move to next cycle
+            cycle_start = cycle_end + timedelta(microseconds=1)
+            cycle_start = cycle_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        return cycles
     
     def get_time_period_stats(self, period: str) -> Tuple[datetime, datetime]:
         """Get date range for specified time period"""
@@ -554,6 +714,195 @@ class CostAnalyzer:
                     model_counts[msg.model] += 1
         
         return model_counts
+    
+    def print_anthropic_sessions(self, top_n: int = 10, currency: str = "USD", sort_by: str = "cost", gpu_hours: bool = False, billing_day: int = 1):
+        """Print Anthropic 5-hour session windows with billing cycle breakdown"""
+        if not self.anthropic_sessions:
+            print("No Anthropic sessions found.")
+            return
+        
+        # Get billing cycles
+        billing_cycles = self.get_billing_cycles(billing_day)
+        
+        # Group sessions by billing cycle
+        cycle_sessions = defaultdict(list)
+        for session in self.anthropic_sessions:
+            session_time = session.first_message_time.astimezone(self.local_tz)
+            
+            # Find which billing cycle this session belongs to
+            for cycle_start, cycle_end, cycle_label in billing_cycles:
+                if cycle_start <= session_time <= cycle_end:
+                    cycle_sessions[cycle_label].append(session)
+                    break
+        
+        # Determine sort method
+        if sort_by == "date":
+            sorted_sessions = sorted(self.anthropic_sessions, 
+                                   key=lambda x: x.first_message_time, 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} MOST RECENT ANTHROPIC SESSIONS (5-hour windows)"
+        elif sort_by == "duration":
+            sorted_sessions = sorted(self.anthropic_sessions, 
+                                   key=lambda x: (x.last_message_time - x.first_message_time).total_seconds(), 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} LONGEST ANTHROPIC SESSIONS (5-hour windows)"
+        else:  # default to cost
+            sorted_sessions = sorted(self.anthropic_sessions, 
+                                   key=lambda x: x.total_cost_usd, 
+                                   reverse=True)[:top_n]
+            title = f"TOP {top_n} MOST EXPENSIVE ANTHROPIC SESSIONS (5-hour windows)"
+        
+        # Calculate header width
+        gpu_hours_col_width = 12 if gpu_hours else 0
+        header_width = 220 + gpu_hours_col_width
+        
+        print("\n" + "-"*header_width)
+        print(title)
+        print("-"*header_width)
+        
+        # Build header line
+        header = f"{'Session Window':<35} {'Date':>12} {'First':>8} {'Last':>8} {'Cost':>10}"
+        if gpu_hours:
+            header += f" {'GPU Hours':>10}"
+        header += f" {'Total Msgs':>12} {'Total Tokens':>14} │ {'Sonnet Msgs':>12} {'Sonnet Cost':>12} {'Sonnet Tokens':>14} │ {'Opus Msgs':>10} {'Opus Cost':>10} {'Opus Tokens':>12}"
+        
+        print(header)
+        print("-"*header_width)
+        
+        total_cost = Decimal('0')
+        total_messages = 0
+        total_all_tokens = 0
+        total_sonnet_messages = 0
+        total_sonnet_tokens = 0
+        total_sonnet_cost = Decimal('0')
+        total_opus_messages = 0
+        total_opus_tokens = 0
+        total_opus_cost = Decimal('0')
+        
+        for i, session in enumerate(sorted_sessions, 1):
+            # Convert to local timezone for display
+            local_first = session.first_message_time.astimezone(self.local_tz)
+            local_last = session.last_message_time.astimezone(self.local_tz)
+            date = local_first.strftime('%Y-%m-%d')
+            first_time = local_first.strftime('%H:%M')
+            last_time = local_last.strftime('%H:%M')
+            total_cost += session.total_cost_usd
+            total_messages += session.total_messages
+            
+            # Calculate total tokens (including cache)
+            session_total_tokens = (session.total_input_tokens + 
+                                  session.total_cache_creation_input_tokens + 
+                                  session.total_cache_read_input_tokens + 
+                                  session.total_output_tokens)
+            total_all_tokens += session_total_tokens
+            
+            # Calculate model-specific stats for this session
+            session_sonnet_messages = 0
+            session_sonnet_tokens = 0
+            session_sonnet_cost = Decimal('0')
+            session_opus_messages = 0
+            session_opus_tokens = 0
+            session_opus_cost = Decimal('0')
+            
+            # Find all messages in this Anthropic session and categorize by model
+            for claude_session_key in session.claude_sessions:
+                for msg in self.messages:
+                    msg_session_key = f"{msg.project_name}/{msg.session_id}"
+                    if (msg_session_key == claude_session_key and 
+                        msg.timestamp >= session.start_time and 
+                        msg.timestamp <= session.end_time and
+                        msg.model):
+                        
+                        msg_total_tokens = (msg.input_tokens + msg.cache_creation_input_tokens + 
+                                          msg.cache_read_input_tokens + msg.output_tokens)
+                        
+                        if 'sonnet' in msg.model.lower():
+                            if msg.role == "assistant":
+                                session_sonnet_messages += 1
+                            session_sonnet_tokens += msg_total_tokens
+                            session_sonnet_cost += msg.cost_usd
+                        elif 'opus' in msg.model.lower():
+                            if msg.role == "assistant":
+                                session_opus_messages += 1
+                            session_opus_tokens += msg_total_tokens
+                            session_opus_cost += msg.cost_usd
+            
+            # Add to totals
+            total_sonnet_messages += session_sonnet_messages
+            total_sonnet_tokens += session_sonnet_tokens
+            total_sonnet_cost += session_sonnet_cost
+            total_opus_messages += session_opus_messages
+            total_opus_tokens += session_opus_tokens
+            total_opus_cost += session_opus_cost
+            
+            # Create session identifier
+            session_id = f"Anthropic-{i:02d}"
+            
+            line = f"{session_id:<35} {date:>12} {first_time:>8} {last_time:>8} {self.format_currency(session.total_cost_usd, currency, 2):>10}"
+            if gpu_hours:
+                gpu_hours_value = float(session.total_cost_usd) / 8
+                line += f" {gpu_hours_value:>10.4f}"
+            line += f" {session.total_messages:>12,} {session_total_tokens:>14,} │ {session_sonnet_messages:>12,} {self.format_currency(session_sonnet_cost, currency, 2):>12} {session_sonnet_tokens:>14,} │ {session_opus_messages:>10,} {self.format_currency(session_opus_cost, currency, 2):>10} {session_opus_tokens:>12,}"
+            
+            print(line)
+            
+            # Show projects and models used
+            if session.projects:
+                projects_str = ", ".join(sorted(session.projects))
+                if len(projects_str) > 100:
+                    projects_str = projects_str[:97] + "..."
+                print(f"  {'Projects:':<15} {projects_str}")
+            
+            if session.models_used:
+                models_str = ", ".join(sorted(session.models_used))
+                print(f"  {'Models:':<15} {models_str}")
+            
+            print()  # Empty line between sessions
+        
+        # Add total line
+        print("-"*header_width)
+        sort_label = "sorted by " + sort_by
+        total_line = f"{'TOTAL for ' + str(len(sorted_sessions)) + ' Anthropic sessions (' + sort_label + '):':<60} {self.format_currency(total_cost, currency, 2):>10}"
+        if gpu_hours:
+            total_gpu_hours = float(total_cost) / 8
+            total_line += f" {total_gpu_hours:>10.4f}"
+        total_line += f" {total_messages:>12,} {total_all_tokens:>14,} │ {total_sonnet_messages:>12,} {self.format_currency(total_sonnet_cost, currency, 2):>12} {total_sonnet_tokens:>14,} │ {total_opus_messages:>10,} {self.format_currency(total_opus_cost, currency, 2):>10} {total_opus_tokens:>12,}"
+        print(total_line)
+        
+        # Show billing cycle breakdown
+        print(f"\n" + "="*80)
+        print(f"BILLING CYCLE BREAKDOWN (Billing day: {billing_day})")
+        print("="*80)
+        
+        total_sessions_all_cycles = 0
+        cycles_over_limit = []
+        
+        for cycle_start, cycle_end, cycle_label in sorted(billing_cycles, reverse=True):
+            sessions_in_cycle = cycle_sessions.get(cycle_label, [])
+            session_count = len(sessions_in_cycle)
+            total_sessions_all_cycles += session_count
+            
+            cycle_cost = sum(s.total_cost_usd for s in sessions_in_cycle)
+            
+            status = "✅"
+            if session_count > 50:
+                status = "⚠️  OVER LIMIT"
+                cycles_over_limit.append((cycle_label, session_count))
+            elif session_count > 40:
+                status = "⚠️  APPROACHING"
+            
+            print(f"{cycle_label:<35} {session_count:>3} sessions  {self.format_currency(cycle_cost, currency, 2):>10}  {status}")
+        
+        print("-"*80)
+        print(f"{'TOTAL across all cycles:':<35} {total_sessions_all_cycles:>3} sessions  {self.format_currency(sum(s.total_cost_usd for s in self.anthropic_sessions), currency, 2):>10}")
+        
+        # Show warnings for cycles over limit
+        if cycles_over_limit:
+            print(f"\n⚠️  BILLING CYCLES OVER 50 SESSION LIMIT:")
+            for cycle_label, count in cycles_over_limit:
+                print(f"   {cycle_label}: {count} sessions ({count - 50} over limit)")
+        else:
+            print(f"\n✅ All billing cycles within 50 session limit")
     
     def print_tool_usage(self):
         """Print tool usage statistics"""
@@ -831,8 +1180,8 @@ def main():
     # Display options
     parser.add_argument("--sessions", type=int, default=10,
                        help="Number of top sessions to show (default: 10)")
-    parser.add_argument("--sort", choices=["cost", "date", "duration"], default="cost",
-                       help="Sort sessions by: cost, date, or duration (default: cost)")
+    parser.add_argument("--sort", choices=["cost", "date", "duration"], default="date",
+                       help="Sort sessions by: cost, date, or duration (default: date)")
     parser.add_argument("--currency", choices=["USD", "EUR", "GBP"], default="USD",
                        help="Currency for display (default: USD)")
     parser.add_argument("--detailed", action="store_true",
@@ -849,6 +1198,12 @@ def main():
     # Session filtering
     parser.add_argument("--project", help="Filter by project name")
     parser.add_argument("--session", help="Filter by session ID")
+    
+    # Anthropic sessions
+    parser.add_argument("--anthropic-sessions", action="store_true",
+                       help="Show Anthropic 5-hour session windows instead of Claude Code sessions")
+    parser.add_argument("--billing-day", type=int, metavar="DAY",
+                       help="Day of month when your Anthropic billing cycle starts (1-31). Required when using --anthropic-sessions.")
     
     # GPU hours
     parser.add_argument("--gpu-hours", action="store_true",
@@ -899,11 +1254,27 @@ def main():
     # Calculate statistics
     analyzer.calculate_session_stats()
     
+    # Calculate Anthropic sessions if requested
+    if args.anthropic_sessions:
+        if not args.billing_day:
+            print("Error: --billing-day is required when using --anthropic-sessions")
+            print("Please specify the day of the month when your Anthropic billing cycle starts (1-31)")
+            print("Example: --billing-day 25")
+            return
+        
+        if args.billing_day < 1 or args.billing_day > 31:
+            print("Error: --billing-day must be between 1 and 31")
+            return
+            
+        analyzer.calculate_anthropic_sessions()
+    
     # Display results
     analyzer.print_summary(args.currency)
     
     if args.days:
         analyzer.print_daily_stats(args.days, args.currency, args.gpu_hours)
+    elif args.anthropic_sessions:
+        analyzer.print_anthropic_sessions(args.sessions, args.currency, args.sort, args.gpu_hours, args.billing_day)
     else:
         analyzer.print_session_details(args.sessions, args.currency, args.sort, args.gpu_hours)
     
