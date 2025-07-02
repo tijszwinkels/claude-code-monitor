@@ -82,6 +82,7 @@ class CostAnalyzer:
         self.messages: List[Message] = []
         self.sessions: Dict[str, SessionStats] = {}
         self.anthropic_sessions: List[AnthropicSession] = []
+        self.processed_hashes: set = set()  # For deduplication of repeated messages (fixes --continue double-counting)
         
         # Get local timezone
         self.local_tz = datetime.now().astimezone().tzinfo
@@ -183,6 +184,23 @@ class CostAnalyzer:
             project_name = file_path.parent.name
             session_id = file_path.stem
             
+            # Deduplication based on message ID and request ID (like claudia)
+            # Only deduplicate if we have both IDs for reliable identification
+            request_id = data.get('requestId')
+            if 'message' in data and isinstance(data['message'], dict):
+                msg_id = data['message'].get('id')
+                
+                # Only deduplicate if we have both message ID and request ID
+                if msg_id and request_id:
+                    dedup_hash = f"{msg_id}:{request_id}"
+                    
+                    # Skip if we've already processed this exact message
+                    if dedup_hash in self.processed_hashes:
+                        return None
+                    
+                    # Mark this message as processed
+                    self.processed_hashes.add(dedup_hash)
+            
             # Handle different message structures
             if 'message' in data:
                 inner_msg = data['message']
@@ -200,6 +218,11 @@ class CostAnalyzer:
                     cache_creation_input_tokens = usage.get('cache_creation_input_tokens', 0)
                     cache_read_input_tokens = usage.get('cache_read_input_tokens', 0)
                     output_tokens = usage.get('output_tokens', 0)
+                    
+                    # Skip entries without meaningful token usage (like claudia)
+                    if (input_tokens == 0 and cache_creation_input_tokens == 0 and 
+                        cache_read_input_tokens == 0 and output_tokens == 0):
+                        return None
                     
                     # Calculate cost if not present (for newer log formats)
                     cost_usd = data.get('costUSD')
@@ -277,6 +300,9 @@ class CostAnalyzer:
     def load_logs(self, files: List[Path], date_from: Optional[datetime] = None,
                   date_to: Optional[datetime] = None):
         """Load and parse log files"""
+        # Reset deduplication tracking for fresh analysis
+        self.processed_hashes.clear()
+        
         for file_path in files:
             try:
                 with open(file_path, 'r') as f:
