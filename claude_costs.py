@@ -101,6 +101,12 @@ class CostAnalyzer:
                 'cache_write': Decimal('18.75'),  # $18.75 per million cache write tokens
                 'cache_read': Decimal('1.50')   # $1.50 per million cache read tokens
             },
+            'claude-opus-4-1-20250805': {
+                'input': Decimal('15.00'),  # $15 per million input tokens
+                'output': Decimal('75.00'),  # $75 per million output tokens
+                'cache_write': Decimal('18.75'),  # $18.75 per million cache write tokens
+                'cache_read': Decimal('1.50')   # $1.50 per million cache read tokens
+            },
             # Legacy model names
             'claude-3-5-sonnet-20241022': {
                 'input': Decimal('3.00'),
