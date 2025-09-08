@@ -77,8 +77,11 @@ class AnthropicSession:
     models_used: set = field(default_factory=set)
 
 class CostAnalyzer:
-    def __init__(self):
-        self.claude_dir = Path.home() / ".claude" / "projects"
+    def __init__(self, claude_dir=None):
+        if claude_dir:
+            self.claude_dir = Path(claude_dir) / "projects"
+        else:
+            self.claude_dir = Path.home() / ".claude" / "projects"
         self.messages: List[Message] = []
         self.sessions: Dict[str, SessionStats] = {}
         self.anthropic_sessions: List[AnthropicSession] = []
@@ -1215,10 +1218,14 @@ def main():
     parser.add_argument("--gpu-hours", action="store_true",
                        help="Add GPU hours column (cost divided by 8)")
     
+    # .claude directory location
+    parser.add_argument("--claude-dir", dest="claude_dir", 
+                       help="Path to the .claude directory (defaults to ~/.claude)")
+    
     args = parser.parse_args()
     
     # Initialize analyzer
-    analyzer = CostAnalyzer()
+    analyzer = CostAnalyzer(args.claude_dir)
     
     # Determine date range
     date_from = None
